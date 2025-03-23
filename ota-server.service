@@ -1,0 +1,13 @@
+[Unit]
+Description=Python OTA GitHub Server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/esp_ota_server/ota_github_server.py
+WorkingDirectory=/home/pi/esp_ota_server
+Restart=always
+User=pi
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

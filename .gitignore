@@ -172,3 +172,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Project 
+ota_files/*
+.ota_credentials
+.ota_projects.json
