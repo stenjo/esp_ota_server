@@ -73,3 +73,10 @@ Verify that the service is running:
 sudo systemctl status ota-server
 ```
 
+View the logs live:
+
+```bash
+sudo journalctl -u ota-server.service -f
+```
+
+
