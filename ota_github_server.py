@@ -10,16 +10,17 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
 from functools import partial
 import json
-import requests # type: ignore
+import requests  # type: ignore
+from packaging.version import parse as parse_version  # ✅ for version sorting
 
 CREDS_FILE = ".ota_credentials" if os.path.exists(".ota_credentials") \
     else os.path.expanduser("~/.ota_credentials")
 PROJECTS_FILE = ".ota_projects.json" if os.path.exists(".ota_projects.json") \
-      else os.path.expanduser("~/.ota_projects.json")
+    else os.path.expanduser("~/.ota_projects.json")
 
 USERNAME = PASSWORD = ""
 if os.path.exists(CREDS_FILE):
-    with open(CREDS_FILE, encoding="utf-8") as f:  # Specify encoding as utf-8
+    with open(CREDS_FILE, encoding="utf-8") as f:
         line = f.readline().strip()
         if ";" in line:
             USERNAME, PASSWORD = line.split(";", 1)
@@ -34,43 +35,23 @@ if os.path.exists(PROJECTS_FILE):
         PROJECTS = json.load(pf)
 
 class AuthHandler(SimpleHTTPRequestHandler):
-    """
-    Custom request handler for handling authentication and serving OTA updates.
-
-    Inherits from SimpleHTTPRequestHandler.
-    """
-
     def do_auth_head(self):
-        """
-        Send HTTP 401 response with the 'WWW-Authenticate' header.
-        """
         self.send_response(401)
         self.send_header('WWW-Authenticate', 'Basic realm="OTA Server"')
         self.end_headers()
 
     def is_authenticated(self):
-        """
-        Check if the request is authenticated.
-
-        Returns:
-            bool: True if the request is authenticated, False otherwise.
-        """
         auth_header = self.headers.get('Authorization')
         return auth_header == f"Basic {AUTH_KEY}"
 
     def list_directory(self, path):
-        """
-        Override the default behavior of listing the directory contents.
-
-        Args:
-            path (str): The path of the directory.
-
-        Returns:
-            None
-        """
         project = os.path.basename(path.rstrip('/'))
         if project in PROJECTS:
-            versions = sorted([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
+            versions = sorted([
+                d for d in os.listdir(path)
+                if os.path.isdir(os.path.join(path, d))
+            ], key=parse_version, reverse=True)
+
             version_file_path = os.path.join(path, "version")
             current_version = None
             if os.path.exists(version_file_path):
@@ -81,13 +62,15 @@ class AuthHandler(SimpleHTTPRequestHandler):
             html += f"<h1>{project} - Synced Versions</h1>"
             if current_version:
                 html += f"<p><strong>Current Version:</strong> {current_version}</p>"
-            html += f"<p><a href='/sync_now?project={project}'>Sync Now</a> | <a href='/rollback?project={project}'>Rollback</a></p>"
+            html += f"<p><a href='/sync_now?project={project}'>Sync Now</a> | "
+            html += f"<a href='/rollback?project={project}'>Rollback</a> | "
+            html += "<a href='/'>Back to projects</a></p>"
             html += "<ul>"
             for ver in versions:
                 html += f'<li><a href="{ver}/">{ver}</a>'
                 py_files = [f for f in os.listdir(os.path.join(path, ver)) if f.endswith(".py")]
                 if py_files:
-                    html += " <ul>"
+                    html += "<ul>"
                     for f in py_files:
                         html += f'<li><a href="{ver}/{f}">{f}</a></li>'
                     html += "</ul>"
@@ -104,12 +87,6 @@ class AuthHandler(SimpleHTTPRequestHandler):
         return super().list_directory(path)
 
     def do_GET(self):
-        """
-        Handle GET requests.
-
-        Returns:
-            None
-        """
         if not self.is_authenticated():
             self.do_auth_head()
             self.wfile.write(b"Authentication required.")
@@ -141,8 +118,12 @@ class AuthHandler(SimpleHTTPRequestHandler):
                 try:
                     repo = PROJECTS[project]
                     tags = get_latest_tags(repo, count=2)
+                    tags = sorted(tags, key=parse_version, reverse=True)
                     for tag in tags:
                         fetch_github_release(tag, project, repo)
+                    version_file = os.path.join(OTA_DIR, project, "version")
+                    with open(version_file, "w", encoding="utf-8") as vf:
+                        vf.write(tags[0])
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(f"Manually synced {project} tags: {', '.join(tags)}".encode())
@@ -156,33 +137,45 @@ class AuthHandler(SimpleHTTPRequestHandler):
             project = query.get("project", [None])[0]
             if project in PROJECTS:
                 project_path = os.path.join(OTA_DIR, project)
-                versions = sorted([d for d in os.listdir(project_path) if os.path.isdir(os.path.join(project_path, d))])
+                versions = sorted([
+                    d for d in os.listdir(project_path)
+                    if os.path.isdir(os.path.join(project_path, d))
+                ], key=parse_version, reverse=True)
                 version_file = os.path.join(project_path, "version")
                 if len(versions) >= 2:
                     with open(version_file, "w", encoding="utf-8") as vf:
-                        vf.write(versions[-2])
+                        vf.write(versions[1])
                     self.send_response(200)
                     self.end_headers()
-                    self.wfile.write(f"Rolled back {project} to {versions[-2]}".encode())
+                    self.wfile.write(f"Rolled back {project} to {versions[1]}".encode())
                 else:
                     self.send_response(400)
                     self.end_headers()
                     self.wfile.write(b"No previous version to roll back to.")
                 return
 
+        if parsed_path.path == "/set_latest":
+            project = query.get("project", [None])[0]
+            if project in PROJECTS:
+                latest_file = os.path.join(OTA_DIR, project, "latest")
+                version_file = os.path.join(OTA_DIR, project, "version")
+                if os.path.exists(latest_file):
+                    with open(latest_file, "r") as lf:
+                        latest_version = lf.read().strip()
+                    with open(version_file, "w") as vf:
+                        vf.write(latest_version)
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(f"Set {project} version back to latest ({latest_version})".encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"No latest version file found.")
+                return
+
         return super().do_GET()
 
 def get_latest_tags(repo, count=2):
-    """
-    Retrieves the latest tags from a GitHub repository.
-
-    Args:
-        repo (str): The name of the repository in the format "owner/repo".
-        count (int, optional): The number of latest tags to retrieve. Defaults to 2.
-
-    Returns:
-        list: A list of the names of the latest tags, up to the specified count.
-    """
     url = f"https://api.github.com/repos/{repo}/tags"
     r = requests.get(url)
     r.raise_for_status()
@@ -190,17 +183,6 @@ def get_latest_tags(repo, count=2):
     return [tag["name"] for tag in tags[:count]] if tags else []
 
 def fetch_github_release(tag: str, project: str, repo: str):
-    """
-    Fetches a specific release from a GitHub repository and saves it to the local file system.
-
-    Args:
-        tag (str): The tag of the release to fetch.
-        project (str): The name of the project.
-        repo (str): The name of the GitHub repository.
-
-    Returns:
-        None
-    """
     release_path = os.path.join(OTA_DIR, project, tag)
     if os.path.exists(release_path) and os.listdir(release_path):
         print(f"[{project}] Tag {tag} already synced.")
@@ -219,41 +201,29 @@ def fetch_github_release(tag: str, project: str, repo: str):
                 with open(os.path.join(release_path, target_name), 'wb') as f:
                     f.write(z.read(zip_info))
 
-    version_file = os.path.join(OTA_DIR, project, "version")
-    with open(version_file, "w", encoding="utf-8") as vf:
-        vf.write(tag)
+    latest_file = os.path.join(OTA_DIR, project, "latest")
+    with open(latest_file, "w", encoding="utf-8") as lf:
+        lf.write(tag)
 
-    print(f"[{project}] Fetched release {tag} to {release_path} and updated version file.")
+    print(f"[{project}] Fetched release {tag} to {release_path}")
 
 def sync_latest_releases():
-    """
-    Synchronizes the latest releases for each project in the PROJECTS dictionary.
-
-    This function iterates over each project in the PROJECTS dictionary and retrieves the latest
-    tags from the corresponding GitHub repository. It then fetches the GitHub release for each
-    tag and prints a message indicating the synchronization status.
-
-    Raises:
-        Exception: If an error occurs during the synchronization process.
-
-    """
     for project, repo in PROJECTS.items():
         try:
             tags = get_latest_tags(repo, count=2)
+            if not tags:
+                continue
+            tags = sorted(tags, key=parse_version, reverse=True)
+            latest_tag = tags[0]
+            version_file = os.path.join(OTA_DIR, project, "version")
+            with open(version_file, "w", encoding="utf-8") as vf:
+                vf.write(latest_tag)
             for tag in tags:
-                print(f"[{project}] Syncing tag: {tag}")
                 fetch_github_release(tag, project, repo)
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"[{project}] Sync error: {e}")
 
 def periodic_sync():
-    """
-    Periodically syncs the latest releases.
-
-    This function runs in an infinite loop and periodically calls the `sync_latest_releases` function
-    to synchronize the latest releases. It sleeps for the specified `SYNC_INTERVAL` between each sync.
-
-    """
     while True:
         sync_latest_releases()
         time.sleep(SYNC_INTERVAL)
